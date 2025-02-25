@@ -80,57 +80,60 @@ def train(config_path: str) -> MyAgent:
         MyAgent: The trained agent.
     """
 
-    # Environment and agent configuration
+    # Configuration de l'environnement et de l'agent
     env, agent, config = simulation_config(config_path)
     max_episodes = config.get('max_episodes')
 
-    # Metrics to follow the performance
+    # Variables pour suivre les performances
     all_rewards = []
     total_reward = 0
     episode_count = 0
     
-    # Initial reset of the environment
+    # Initialisation de l'environnement au début de l'épisode
     state, info = env.reset()
-    time.sleep(0.5)
+    
 
     try:
         while episode_count < max_episodes:
-            # Determine agents actions
+            # Déterminer les actions des agents
             actions = agent.get_action(state)
 
-            # Execution of a simulation step
-            state, rewards, terminated, truncated, info = env.step(actions)
+            # Exécution d'une étape de simulation
+            next_state, rewards, terminated, truncated, info = env.step(actions)
             total_reward += np.sum(rewards)
 
-            # Update agent policy
-            agent.update_policy(actions, state, rewards)
+            # Mise à jour de la politique de l'agent avec next_state (état suivant)
+            agent.update_policy(actions, state, rewards, next_state)  # Utilisation de next_state
 
-            # Display of the step information
+            # Affichage des informations de l'étape
             print(f"\rEpisode {episode_count + 1}, Step {info['current_step']}, "
                   f"Reward: {total_reward:.2f}, "
                   f"Evacuated: {len(info['evacuated_agents'])}, "
                   f"Deactivated: {len(info['deactivated_agents'])}", end='')
             
-            # Pause
+            # Pause pour mieux suivre l'évolution de la simulation
             time.sleep(0.5)
             
-            # If the episode is terminated
+            # Si l'épisode est terminé ou tronqué
             if terminated or truncated:
                 print("\r")
                 episode_count += 1
                 all_rewards.append(total_reward)
                 total_reward = 0
                 
+                # Réinitialiser l'environnement pour le prochain épisode
                 if episode_count < max_episodes:
                     state, info = env.reset()
 
     except KeyboardInterrupt:
-        print("\nSimulation interrupted by the user")
+        print("\nSimulation interrompue par l'utilisateur")
     
     finally:
         env.close()
 
     return agent, all_rewards
+
+
 
 
 def evaluate(configs_paths: list, trained_agent: MyAgent, num_episodes: int = 10) -> tuple[pd.DataFrame, pd.DataFrame]:
