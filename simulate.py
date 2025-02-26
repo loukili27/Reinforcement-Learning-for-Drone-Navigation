@@ -71,7 +71,7 @@ def plot_cumulated_rewards(rewards: list, interval: int = 100):
 
 def train(config_path: str) -> MyAgent:
     """
-    Train an agent on the configured environment.
+    Train an agent using SARSA(λ) on the configured environment.
 
     Args:
         config_path (str): Path to the configuration JSON file.
@@ -91,28 +91,27 @@ def train(config_path: str) -> MyAgent:
     
     # Initialisation de l'environnement au début de l'épisode
     state, info = env.reset()
-    
+    actions = agent.get_action(state)  # Première action choisie
 
     try:
         while episode_count < max_episodes:
-            # Déterminer les actions des agents
-            actions = agent.get_action(state)
-
             # Exécution d'une étape de simulation
             next_state, rewards, terminated, truncated, info = env.step(actions)
-            total_reward += np.sum(rewards)
+            next_actions = agent.get_action(next_state)  # Choisir la prochaine action (SARSA)
 
-            # Mise à jour de la politique de l'agent avec next_state (état suivant)
-            agent.update_policy(actions, state, rewards, next_state)  # Utilisation de next_state
+            # Mise à jour de la politique de l'agent avec SARSA(λ)
+            agent.update_policy(state, actions, rewards, next_state, next_actions)
+
+            # Passage à l'état et aux actions suivants
+            state, actions = next_state, next_actions
+            total_reward += np.sum(rewards)
 
             # Affichage des informations de l'étape
             print(f"\rEpisode {episode_count + 1}, Step {info['current_step']}, "
                   f"Reward: {total_reward:.2f}, "
                   f"Evacuated: {len(info['evacuated_agents'])}, "
                   f"Deactivated: {len(info['deactivated_agents'])}", end='')
-            
-            # Pause pour mieux suivre l'évolution de la simulation
-            time.sleep(0.5)
+
             
             # Si l'épisode est terminé ou tronqué
             if terminated or truncated:
@@ -124,6 +123,7 @@ def train(config_path: str) -> MyAgent:
                 # Réinitialiser l'environnement pour le prochain épisode
                 if episode_count < max_episodes:
                     state, info = env.reset()
+                    actions = agent.get_action(state)  # Nouvelle action après reset
 
     except KeyboardInterrupt:
         print("\nSimulation interrompue par l'utilisateur")
@@ -132,6 +132,8 @@ def train(config_path: str) -> MyAgent:
         env.close()
 
     return agent, all_rewards
+
+
 
 
 
