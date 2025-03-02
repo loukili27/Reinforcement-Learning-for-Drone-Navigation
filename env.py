@@ -5,7 +5,7 @@ import math
 from gymnasium import spaces
 from collections import deque
 from typing import Tuple, List, Set, Optional, Union, Dict
-from reward import compute_reward
+#from reward import compute_reward
 
 class MazeEnv(gym.Env):
 
@@ -229,7 +229,7 @@ class MazeEnv(gym.Env):
 
     def get_agent_state(self, agent_idx: int) -> np.ndarray:
         """Get state for a specific agent: self position, goal position, lidar scan, and other close agents positions"""
-        state = np.full(self.single_agent_state_size, -1, dtype=np.float32)   # Initialization with -1
+        state = np.full(42, -1, dtype=np.float32)   # Initialization with -1
         
         # If the agent is deactivated or evacuated, return state with -1
         if agent_idx in self.deactivated_agents or agent_idx in self.evacuated_agents:
@@ -263,7 +263,7 @@ class MazeEnv(gym.Env):
         added_agents_count = 0
 
         for i, other_pos in enumerate(self.agent_positions):
-            if i!= agent_idx and i not in self.evacuated_agents:
+            if i!= agent_idx:
                 distance = np.linalg.norm(agent_pos - other_pos)
                 if distance < self.communication_range:   # Communication only if in communication range
                     base_index = 11 + added_agents_count * 2
@@ -334,12 +334,180 @@ class MazeEnv(gym.Env):
             self._render_frame()
         
         return state, info
+    
+    
+    def compute_reward(self, old_positions: list) -> Tuple[np.ndarray, Set[int]]:
+        rewards = np.zeros(self.num_agents)
 
+        # Paramètres de récompenses optimisés pour la coordination
+        REWARD_SCHEME = {
+            'goal': 1,                    # Récompense finale
+            'collision': -0.120,          # Pénalité de collision
+            'progress_coef': 0.045,       # Coefficient de progression
+            'wall_penalty': -0.030,       # Pénalité de proximité aux murs
+            'dynamic_penalty': -0.04,     # Pénalité d'obstacle dynamique
+            'inactivity': -0.020,         # Pénalité d'inactivité
+            'encouragement_bonus': 0.055, # Bonus d'encouragement
+            
+            # Nouveaux paramètres pour la coordination
+            'team_success': 0.08,         # Bonus quand un autre agent réussit
+            'team_formation': 0.02,       # Bonus pour une bonne formation d'équipe
+            'shared_exploration': 0.03,   # Bonus pour exploration coordonnée
+            'obstacle_warning': 0.04      # Bonus pour éviter des obstacles détectés par d'autres
+        }
+
+        # Suivi de l'état de l'équipe
+        successful_agents = set()
+        for i in self.evacuated_agents:
+            successful_agents.add(i)
+
+        # Calcul des récompenses individuelles et d'équipe
+        for i, (old_pos, new_pos) in enumerate(zip(old_positions, self.agent_positions)):
+            if i in self.evacuated_agents:
+                continue
+            elif i in self.deactivated_agents:
+                rewards[i] = REWARD_SCHEME['collision']
+                continue
+            elif tuple(new_pos) in self.goal_area:
+                # Récompense individuelle pour l'agent qui a atteint l'objectif
+                rewards[i] = REWARD_SCHEME['goal']
+                self.evacuated_agents.add(i)
+                successful_agents.add(i)
+                
+                # Récompense d'équipe : tous les autres agents actifs sont récompensés
+                for j in range(self.num_agents):
+                    if j != i and j not in self.evacuated_agents and j not in self.deactivated_agents:
+                        rewards[j] += REWARD_SCHEME['team_success']
+                continue
+            
+            # Calcul des récompenses standard
+            state = self.get_agent_state(i)
+            goal_pos = self.goal_area[i]
+            orientation = state[2]
+            dx, dy = new_pos[0] - old_pos[0], new_pos[1] - old_pos[1]
+            lidar_dists = state[[6, 8, 10]]
+            lidar_types = state[[7, 9, 11]]
+
+            # Directions possibles selon l'orientation
+            main_moves = {
+                0: (-1, 0),  
+                1: (0, -1),  
+                2: (1, 0),   
+                3: (0, 1)    
+            }
+
+            # Récompense de progression vers l'objectif
+            old_dist = np.linalg.norm(np.array(old_pos) - np.array(goal_pos))
+            new_dist = np.linalg.norm(np.array(new_pos) - np.array(goal_pos))
+            progress = (old_dist - new_dist)
+            rewards[i] += REWARD_SCHEME['progress_coef'] * progress
+
+            # Pénalité d'inactivité
+            is_inactive = np.array_equal(old_pos, new_pos)
+            if is_inactive:
+                rewards[i] += REWARD_SCHEME['inactivity']
+
+            # Pénalités liées aux obstacles détectés
+            danger_score = 0
+            for j in range(len(lidar_dists)):
+                obs_type_j = lidar_types[j]
+                dist_j = lidar_dists[j]
+
+                if j == 0:  # LIDAR principal
+                    threshold = 3
+                    if obs_type_j == 1:
+                        base_penalty = REWARD_SCHEME['wall_penalty']
+                    elif obs_type_j == 2:
+                        base_penalty = REWARD_SCHEME['dynamic_penalty']
+                    else:
+                        base_penalty = 0
+                    max_dist_val = self.max_lidar_dist_main
+                else:  # LIDARs secondaires
+                    threshold = 3
+                    if obs_type_j == 1:
+                        base_penalty = REWARD_SCHEME['wall_penalty']
+                    elif obs_type_j == 2:
+                        base_penalty = REWARD_SCHEME['dynamic_penalty']
+                    else:
+                        base_penalty = 0                      
+                    max_dist_val = self.max_lidar_dist_second
+
+                if obs_type_j in [1, 2] and dist_j < threshold:
+                    danger = base_penalty * (1 - dist_j / max_dist_val)
+                    if j == 0:
+                        expected_dx, expected_dy = main_moves.get(orientation, (0, 0))
+                        if dx == expected_dx and dy == expected_dy:
+                            danger_score += danger
+                    elif j == 1:
+                        expected_dx, expected_dy = main_moves.get((orientation + 1) % 4, (0, 0))
+                        if dx == expected_dx and dy == expected_dy:
+                            danger_score += danger
+                    elif j == 2:
+                        expected_dx, expected_dy = main_moves.get((orientation - 1) % 4, (0, 0))
+                        if dx == expected_dx and dy == expected_dy:
+                            danger_score += danger
+            
+            rewards[i] += danger_score
+
+            # Bonus d'encouragement si la voie est libre
+            if lidar_types[0] == 0:
+                expected_dx, expected_dy = main_moves.get(orientation, (0, 0))
+                if dx == expected_dx and dy == expected_dy:
+                    rewards[i] += REWARD_SCHEME['encouragement_bonus']
+            
+            # === MÉCANISMES DE COORDINATION ===
+            
+            # 1. Formation d'équipe optimale
+            other_agents_positions = []
+            for j in range(self.num_agents):
+                if j != i and j not in self.evacuated_agents and j not in self.deactivated_agents:
+                    other_agents_positions.append(self.agent_positions[j])
+            
+            if other_agents_positions:
+                # Récompenser des distances optimales entre agents (ni trop proches, ni trop éloignés)
+                min_dist_to_agent = float('inf')
+                for other_pos in other_agents_positions:
+                    dist = np.linalg.norm(np.array(new_pos) - np.array(other_pos))
+                    min_dist_to_agent = min(min_dist_to_agent, dist)
+                
+                # Distance optimale pour la coordination
+                optimal_distance = 3.0
+                if 2.0 < min_dist_to_agent < 4.0:
+                    # Distance idéale pour la collaboration
+                    rewards[i] += REWARD_SCHEME['team_formation']
+                elif min_dist_to_agent <= 2.0:
+                    # Trop proches, pénalité légère
+                    rewards[i] -= REWARD_SCHEME['team_formation'] * 0.5
+            
+            # 2. Exploration coordonnée
+            # Vérifier si cet agent explore une zone que d'autres n'ont pas encore explorée
+            unique_exploration = True
+            for j, other_pos in enumerate(other_agents_positions):
+                if j != i and np.linalg.norm(np.array(new_pos) - np.array(other_pos)) < 2.0:
+                    unique_exploration = False
+                    break
+            
+            if unique_exploration:
+                rewards[i] += REWARD_SCHEME['shared_exploration']
+            
+            # 3. Partage d'information sur les obstacles
+            # Obtenir les informations LIDAR des autres agents à portée de communication
+            for j in range(self.num_agents):
+                if j != i and j not in self.evacuated_agents and j not in self.deactivated_agents:
+                    other_pos = self.agent_positions[j]
+                    # Si l'autre agent est à portée de communication
+                    if np.linalg.norm(np.array(new_pos) - np.array(other_pos)) <= self.communication_range:
+                        other_state = self.get_agent_state(j)
+                        other_lidar_types = other_state[[7, 9, 11]]
+                        
+                        # Si l'autre agent détecte un obstacle que notre agent ne voit pas
+                        if np.any(other_lidar_types > 0) and not np.any(lidar_types > 0):
+                            rewards[i] += REWARD_SCHEME['obstacle_warning']
+
+        return rewards, self.evacuated_agents
 
     def get_reward(self, old_positions: list):
-        rewards, evacuated_agents = compute_reward(self.num_agents, old_positions,
-                                                   self.agent_positions, self.evacuated_agents, 
-                                                   self.deactivated_agents, self.goal_area)
+        rewards, evacuated_agents = self.compute_reward( old_positions)
         if evacuated_agents != self.evacuated_agents:
             self.evacuated_agents = evacuated_agents    
 
@@ -381,6 +549,7 @@ class MazeEnv(gym.Env):
             if 0 <= action <= 4:
                 if i in self.deactivated_agents or i in self.evacuated_agents:
                     new_pos = agent_pos   # Steady
+                    proposed_positions.append(new_pos)
                     continue
                 new_pos = agent_pos + self.directions[action]   # New position
                 
@@ -459,6 +628,7 @@ class MazeEnv(gym.Env):
     def resolve_collisions(self, proposed_positions: List[np.ndarray]) -> None:
         # Compute priorities only for active agents
         priorities = []
+        
         for i, pos in enumerate(proposed_positions):
             if i in self.evacuated_agents or i in self.deactivated_agents:
                 priorities.append(float('inf'))
@@ -467,6 +637,7 @@ class MazeEnv(gym.Env):
             priorities.append(min_dist_to_goal)
 
         agent_order = sorted(range(len(priorities)), key=lambda k: priorities[k])
+
         new_positions = [pos.copy() for pos in self.agent_positions]
 
         def is_valid_position(pos, agent_idx):

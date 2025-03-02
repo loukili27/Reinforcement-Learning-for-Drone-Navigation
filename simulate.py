@@ -41,7 +41,15 @@ def simulation_config(config_path: str, new_agent: bool = True) -> Tuple[MazeEnv
     )
 
     # Agent configuration
-    agent = MyAgent(num_agents=config.get('num_agents')) if new_agent else None
+    if new_agent:
+        # Définir state_size et action_size
+
+        # Initialiser l'agent avec state_size et action_size
+        agent = MyAgent(
+            num_agents=config.get('num_agents'),
+        )
+    else:
+        agent = None
 
     return env, agent, config
 
@@ -69,9 +77,11 @@ def plot_cumulated_rewards(rewards: list, interval: int = 100):
     plt.show()
 
 
+
+
 def train(config_path: str) -> MyAgent:
     """
-    Train an agent using SARSA(λ) on the configured environment.
+    Train an agent on the configured environment.
 
     Args:
         config_path (str): Path to the configuration JSON file.
@@ -80,62 +90,58 @@ def train(config_path: str) -> MyAgent:
         MyAgent: The trained agent.
     """
 
-    # Configuration de l'environnement et de l'agent
+    # Environment and agent configuration
     env, agent, config = simulation_config(config_path)
     max_episodes = config.get('max_episodes')
 
-    # Variables pour suivre les performances
+    # Metrics to follow the performance
     all_rewards = []
     total_reward = 0
     episode_count = 0
     
-    # Initialisation de l'environnement au début de l'épisode
+    # Initial reset of the environment
     state, info = env.reset()
-    actions = agent.get_action(state)  # Première action choisie
+    
+    time.sleep(0.5)
 
     try:
         while episode_count < max_episodes:
-            # Exécution d'une étape de simulation
-            next_state, rewards, terminated, truncated, info = env.step(actions)
-            next_actions = agent.get_action(next_state)  # Choisir la prochaine action (SARSA)
+            # Determine agents actions
+            actions = agent.get_action(state)
 
-            # Mise à jour de la politique de l'agent avec SARSA(λ)
-            agent.update_policy(state, actions, rewards, next_state, next_actions)
-
-            # Passage à l'état et aux actions suivants
-            state, actions = next_state, next_actions
+            # Execution of a simulation step
+            state, rewards, terminated, truncated, info = env.step(actions)
             total_reward += np.sum(rewards)
 
-            # Affichage des informations de l'étape
+            # Update agent policy
+            agent.update_policy(actions, state, rewards)
+
+            # Display of the step information
             print(f"\rEpisode {episode_count + 1}, Step {info['current_step']}, "
                   f"Reward: {total_reward:.2f}, "
                   f"Evacuated: {len(info['evacuated_agents'])}, "
                   f"Deactivated: {len(info['deactivated_agents'])}", end='')
-
             
-            # Si l'épisode est terminé ou tronqué
+            # Pause
+            time.sleep(0)
+            
+            # If the episode is terminated
             if terminated or truncated:
                 print("\r")
                 episode_count += 1
                 all_rewards.append(total_reward)
                 total_reward = 0
                 
-                # Réinitialiser l'environnement pour le prochain épisode
                 if episode_count < max_episodes:
                     state, info = env.reset()
-                    actions = agent.get_action(state)  # Nouvelle action après reset
 
     except KeyboardInterrupt:
-        print("\nSimulation interrompue par l'utilisateur")
+        print("\nSimulation interrupted by the user")
     
     finally:
         env.close()
 
     return agent, all_rewards
-
-
-
-
 
 
 def evaluate(configs_paths: list, trained_agent: MyAgent, num_episodes: int = 10) -> tuple[pd.DataFrame, pd.DataFrame]:
